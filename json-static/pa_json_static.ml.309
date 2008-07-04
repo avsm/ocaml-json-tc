@@ -1,0 +1,938 @@
+(*
+  Conversion between OCaml types and JSON types as provided by the json-wheel
+  library. 
+  
+  Author: Martin Jambon <martin_jambon@emailuser.net>
+
+Copyright (c) 2007 Burnham Institute for Medical Research
+Copyright (c) 2007 Wink Technologies Inc.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. The name of the author may not be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*)
+
+
+open Printf
+
+
+let light_mode = ref false
+
+let reserved_prefix = "__json_static_"
+
+let new_id =
+  let n = ref 0 in
+  fun name -> 
+    incr n; 
+    reserved_prefix ^ name ^ string_of_int !n
+
+
+let check_unique f l =
+  let tbl = Hashtbl.create 50 in
+  List.iter
+    (fun x -> 
+       let (_loc, id) = f x in
+       if Hashtbl.mem tbl id then
+	 Stdpp.raise_with_loc _loc
+	   (Failure "this tag or label is not unique")
+       else Hashtbl.add tbl id ())
+    l
+
+let unopt default = function
+    None -> default
+  | Some x -> x
+
+let rec optmap f = function
+    [] -> []
+  | hd :: tl ->
+      match f hd with
+	  None -> optmap f tl
+	| Some x -> x :: optmap f tl
+    
+
+type field = { field_caml_name : string;
+	       field_json_name : string;
+	       field_type : t;
+	       field_caml_loc : Token.flocation;
+	       field_json_loc : Token.flocation;
+	       optional : bool;
+	       default : MLast.expr option;
+	       subset : subset option;
+	       validator_name : string option;
+	       is_mutable : bool }
+
+and subset =
+    [ `List of MLast.expr 
+    | `Dynlist of MLast.expr
+    | `Abstract_set of MLast.expr ]
+
+and constructor = { cons_caml_name : string;
+		    cons_json_name : string;
+		    cons_args : t list;
+		    cons_caml_loc : Token.flocation;
+		    cons_json_loc : Token.flocation }
+
+and type_expr =
+    List of t
+  | Array of t
+  | Option of t
+  | Object of field list
+  | Record of field list
+  | Hashtbl of t
+  | Assoc of t
+  | Tuple of t list
+  | Variant of constructor list
+  | Poly of constructor list
+  | Name of string
+  | String
+  | Bool
+  | Int
+  | Float
+  | Number
+  | Raw
+  | Custom of string
+
+and t = Token.flocation * type_expr
+
+and typedef = { def : t;
+		is_predefined : bool;
+		is_private : bool (* unused at the moment *) }
+
+module StringMap = Map.Make (String)
+
+
+
+let error _loc =
+  <:str_item< 
+    value __json_static_error obj msg =
+      let m = 400 in
+      let s = Json_io.string_of_json obj in
+      let obj_string =
+	if String.length s > m then String.sub s 0 (m - 4) ^ " ..."
+	else s in
+      Json_type.json_error (msg ^ ":\n" ^ obj_string) 
+  >>
+
+
+let numbered_list l =
+  Array.to_list
+    (Array.mapi 
+       (fun i x -> (x, "x" ^ string_of_int i))
+       (Array.of_list l))
+
+let eta_expand = function
+    (<:expr< fun [ $list:_$ ] >>) as f -> f
+  | e -> let _loc = MLast.loc_of_expr e in (<:expr< fun x -> $e$ x >>)
+
+let make_ofjson_defs _loc l =
+  let browse _loc f = <:expr< Json_type.Browse.$lid:f$ >> in
+
+  let rec convert (_loc, def) =
+    match def with
+	List x -> <:expr< $browse _loc "list"$ $convert x$ >>
+      | Array x -> 
+	  <:expr< fun x -> 
+	    Array.of_list (($browse _loc "list"$ $convert x$) x) >>
+      | Option x -> 
+	  <:expr< $browse _loc "optional"$ $convert x$ >>
+      | Object l -> convert_object _loc l
+      | Record r -> convert_record _loc r
+      | Hashtbl x -> 
+	  <:expr< 
+	     fun x -> 
+	       let l = $browse _loc "objekt"$ x in
+	       let tbl = Hashtbl.create (List.length l) in
+               do { List.iter (fun (s, x) -> 
+				 Hashtbl.add tbl s ($convert x$ x)) l;
+		    tbl } >>
+      | Assoc x -> 
+	  <:expr< fun x ->
+	            List.map (fun (key, data) -> (key, $convert x$ data))
+	              ($browse _loc "objekt"$ x) >>
+      | Tuple l ->
+	  let nl = numbered_list l in
+	  let pl = 
+	    List.fold_right 
+	      (fun ((_loc, _), name) tl -> <:patt< [ $lid:name$ :: $tl$ ] >>) 
+	      nl <:patt< [] >> in
+	  let el = 
+	    List.map (fun ((_loc, _) as x, name) ->
+			<:expr< $convert x$ $lid:name$ >>)
+	      nl in
+	  <:expr< fun [ Json_type.Array [ $list:pl$ ] -> ( $list:el$ )
+		      | Json_type.Array _ as x ->
+			  __json_static_error x
+			    "wrong number of elements in JSON array"
+		      | x ->
+			  __json_static_error x
+			    "not a JSON array" ] >>
+      | Poly l ->
+	  convert_variants (fun _loc name -> <:expr< ` $name$ >>) _loc l
+      | Variant l ->
+	  convert_variants (fun _loc name -> <:expr< $uid:name$ >>) _loc l
+      | Name x -> <:expr< $lid: x ^ "_of_json"$ >>
+      | String -> browse _loc "string"
+      | Bool -> browse _loc "bool"
+      | Int -> browse _loc "int"
+      | Float -> browse _loc "float"
+      | Number -> browse _loc "number"
+      | Raw -> <:expr< fun x -> x >>
+      | Custom modul -> <:expr< $uid:modul$ . of_json >>
+
+   and convert_object _loc l =
+     let pel = convert_field_list _loc l in
+     let ml = 
+       List.map 
+	 (fun x -> 
+	    let name = x.field_caml_name in
+	    <:class_str_item< method $name$ = $lid:name$ >>)
+	 l in
+     let obj = 
+       (* <:expr< object $list:ml$ end >> *)
+       MLast.ExObj (_loc, None, ml)
+     in
+     eval_with_tbl _loc <:expr< let $list:pel$ in $obj$ >>
+
+  and convert_record _loc r =
+     let pel = convert_field_list _loc r in
+     eval_with_tbl _loc <:expr< { $list:pel$ } >>
+
+  and convert_field_list _loc l =
+     List.map 
+       (fun { field_caml_name = name;
+	      field_json_name = json_name;
+	      field_type = x;
+	      optional = optional;
+	      default = default;
+	      validator_name = validate_opt } ->
+	  let validate e =
+	    match validate_opt with
+		None -> e
+	      | Some f -> <:expr< let x = $e$ in do { $lid:f$ x; x } >>
+          in
+	  let e1 = 
+	    let f = if optional then "fieldx" else "field" in
+	    <:expr< 
+	  (Json_type.Browse.$lid:f$ tbl $str:json_name$) >> in
+	  let e2 =
+	    match default with
+		Some e -> 
+		  (<:expr< 
+		   match $e1$ with 
+		       [ Json_type.Null -> $e$
+		       | x -> $convert x$ x ] >>)
+	      | None -> <:expr< $convert x$ $e1$ >> in
+	  
+	  (<:patt< $lid:name$ >>, validate e2))
+       l
+
+  and convert_variants make_cons _loc l =
+    let l0, l1 =
+      List.partition (fun x -> x.cons_args = []) l in
+    let pwel0 =
+      List.map
+	(fun { cons_caml_name = name;
+	       cons_json_name = json_name } ->
+	   (<:patt< $str:json_name$ >>, 
+	    None,
+	    make_cons _loc name))
+	l0 in
+    let pwel1 =
+      List.map
+	(fun { cons_caml_name = name;
+	       cons_json_name = json_name;
+	       cons_args = args } ->
+	   let argnames = numbered_list args in
+	   let list_patt =
+	     List.fold_right 
+	       (fun (arg, s) l -> 
+		  <:patt< [ $lid:s$ :: $l$ ] >>)
+	       argnames <:patt< [] >> in
+	   let e =
+	     List.fold_left
+	       (fun cons (arg, s) -> 
+		  <:expr< $cons$ ($convert arg$ $lid:s$) >>)
+	     (make_cons _loc name) argnames in
+	   (<:patt< ($str:json_name$, $list_patt$) >>, 
+	    None, 
+	    e))
+	l1 in
+    let full_pwel pwel =
+      pwel @ [ <:patt< _ >>, None, 
+	       <:expr< __json_static_error x
+                 "invalid variant name or \
+                  wrong number of arguments" >> ]
+    in
+    
+    (<:expr< 
+     fun
+	 [ Json_type.String s as x -> 
+	     match s with [ $list:full_pwel pwel0$ ]
+	       | Json_type.Array 
+		   [ Json_type.String s :: ([ _ :: _ ] as args) ] as x -> 
+		   match (s, args) with [ $list:full_pwel pwel1$ ]
+	       | x -> __json_static_error x
+		   "not able to read this as \
+                    a variant" ]
+     >>)
+
+
+  and eval_with_tbl _loc e =
+    (<:expr< 
+     fun x ->
+       let tbl = 
+	 Json_type.Browse.make_table (Json_type.Browse.objekt x) in
+       $e$ >>)
+  in
+
+  let defs = 
+    optmap
+      (fun ((_loc, name), x) -> 
+	 (*if x.is_private then None
+	 else*)
+	   let fname = name ^ "_of_json" in
+	   Some (<:patt< ( $lid:fname$ : Json_type.t -> $lid:name$ ) >>, 
+		 eta_expand (convert x.def))) l in
+  if defs = [] then 
+    <:str_item< declare end >>
+  else
+   <:str_item< declare value rec $list:defs$; end >>
+
+
+let make_tojson_val, make_tojson_defs =
+  let build _loc s = <:expr< Json_type.Build. $lid:s$ >> in
+
+  let rec convert (_loc, def) =
+    match def with
+	List x -> <:expr< Json_type.Build.list $convert x$ >>
+      | Array x -> 
+	  <:expr< fun x -> 
+                    Json_type.Build.list $convert x$ (Array.to_list x) >>
+      | Option x -> <:expr< Json_type.Build.optional $convert x$ >>
+      | Object l ->
+	  convert_field_list (fun name -> <:expr< x#$lid:name$ >>) 
+	    _loc l
+      | Record r -> 
+	  convert_field_list (fun name -> <:expr< x.$lid:name$ >>)
+	    _loc r
+      | Hashtbl x ->
+	  <:expr< fun tbl -> 
+	    Json_type.Object 
+	      (Hashtbl.fold (fun key data tl -> 
+			       [ (key, $convert x$ data) :: tl ])
+		 tbl []) >>
+      | Assoc x ->
+	  <:expr< 
+	    fun x ->
+	      Json_type.Object
+	        ((List.map (fun (key, data) -> (key, $convert x$ data))) x) >>
+      | Tuple l ->
+	  let nl = numbered_list l in
+	  let pl = List.map (fun (_, name) -> <:patt< $lid:name$ >>) nl in
+	  let a = List.fold_right 
+		    (fun (x, name) tl -> 
+		       <:expr< [ $convert x$ $lid:name$ :: $tl$ ] >>)
+		    nl <:expr< [] >> in
+	  <:expr< fun [ ( $list:pl$ ) -> Json_type.Array $a$ ] >>
+      | Poly l -> 
+	  let pwel =
+	    List.map
+	      (fun { cons_caml_name = name;
+		     cons_json_name = json_name;
+		     cons_args = args } ->
+		 match args with
+		     [] -> 
+		       (<:patt< ` $name$ >>, 
+			None,
+			<:expr< Json_type.String $str:json_name$ >>)
+		   | [x] ->
+		       (<:patt< ` $name$ arg >>, 
+			None, 
+			<:expr<
+			Json_type.Array 
+			  [ Json_type.String $str:json_name$;
+			    $convert x$ arg ] >>)
+		   | _ -> assert false)
+	      l in
+	  <:expr< fun [ $list:pwel$ ] >>
+      | Variant v -> 
+	  let pwel =
+	    List.map
+	      (fun { cons_caml_name = name;
+		     cons_json_name = json_name;
+		     cons_args = args } ->
+		 match args with
+		     [] -> 
+		       (<:patt< $uid:name$ >>, 
+			None,
+			<:expr< Json_type.String $str:json_name$ >>)
+		   | l ->
+		       let args = numbered_list l in
+		       let p =
+			 List.fold_left
+			   (fun cons (_, s) -> <:patt< $cons$ $lid:s$ >>)
+			   <:patt< $uid:name$ >> args in
+		       let e =
+			 List.fold_right
+			   (fun (x, s) l -> 
+			      <:expr< [ $convert x$ $lid:s$ :: $l$ ] >>)
+			   args <:expr< [] >> in
+		       (p, 
+			None, 
+			<:expr<
+			Json_type.Array 
+			  [ Json_type.String $str:json_name$ :: $e$ ] >>))
+	      v in
+	  <:expr< fun [ $list:pwel$ ] >>
+      | Name x -> <:expr< $lid: "json_of_" ^ x$ >>
+      | String -> build _loc "string"
+      | Bool -> build _loc "bool"
+      | Int -> build _loc "int"
+      | Float -> build _loc "float"
+      | Number -> build _loc "float"
+      | Raw -> <:expr< fun x -> x >>
+      | Custom modul -> <:expr< $uid:modul$ . to_json >>
+
+  and convert_field_list access _loc l =
+    let pairs = 
+      List.fold_right
+	(fun { field_caml_name = name;
+	       field_json_name = json_name;
+	       field_type = x } tl ->
+	   <:expr< [ ( $str:json_name$, $convert x$ $access name$ )
+		     :: $tl$ ] >>)
+	l <:expr< [] >> in
+    <:expr< fun x -> Json_type.Object $pairs$ >>
+  in
+
+  let make_defs _loc l = 
+    let defs = 
+      List.map
+	(fun ((_loc, name), x) -> 
+	   let fname = "json_of_" ^ name in
+	   (<:patt< ( $lid:fname$ : $lid:name$ -> Json_type.t ) >>, 
+	    eta_expand (convert x.def)))
+	l in
+    
+    <:str_item< value rec $list:defs$ >> in
+
+  (convert, make_defs)
+
+
+let make_typedef _loc names l =
+  let rec convert (_loc, def) =
+    match def with
+	List x -> <:ctyp< list $convert x$ >>
+      | Array x -> <:ctyp< array $convert x$ >>
+      | Option x -> <:ctyp< option $convert x$ >>
+      | Object l -> 
+	  let ml = List.map (fun x -> (x.field_caml_name,
+				       convert x.field_type)) l in
+	  <:ctyp< < $list:ml$ > >>
+      | Record r -> 
+	  let l = 
+	    List.map (fun x -> (x.field_caml_loc,
+				x.field_caml_name,
+				x.is_mutable,
+				convert x.field_type)) r in
+	  <:ctyp< { $list:l$ } >>
+      | Hashtbl x -> <:ctyp< Hashtbl.t string $convert x$ >>
+      | Assoc x -> <:ctyp< list (string * $convert x$) >>
+      | Tuple l -> 
+	  let tl = List.map convert l in
+	  <:ctyp< ( $list:tl$ ) >>
+      | Poly l -> 
+	  let rfl = 
+	    List.map (fun c ->
+			let name = c.cons_caml_name in
+			match c.cons_args with
+			    [] -> MLast.RfTag (name, true, [])
+			  | [x] -> MLast.RfTag (name, false, [convert x])
+			  | _ -> assert false)
+	      l in
+	  <:ctyp< [ = $list:rfl$ ] >>
+      | Variant v -> 
+	  let l = 
+	    List.map 
+	      (fun x ->
+		 let cal = List.map convert x.cons_args in
+		 (x.cons_caml_loc, x.cons_caml_name, cal))
+	      v in
+	  <:ctyp< [ $list:l$ ] >>
+      | Name x -> 
+	  if StringMap.mem x names then <:ctyp< $lid:x$ >>
+	  else
+	    Stdpp.raise_with_loc _loc 
+	      (Failure ("type name " ^ x ^ 
+			" is undefined or not defined in the same \
+                         'type ... and ...' block"))
+      | String -> <:ctyp< string >>
+      | Bool -> <:ctyp< bool >>
+      | Int -> <:ctyp< int >>
+      | Float -> <:ctyp< float >>
+      | Number -> <:ctyp< float >>
+      | Raw -> <:ctyp< Json_type.t >>
+      | Custom s -> <:ctyp< $uid:s$ . t >> in
+
+  let tdl = 
+    optmap 
+      (fun (name, x) ->
+	 if x.is_predefined then None
+	 else
+	   let ctyp = convert x.def in
+	   Some (name, [], ctyp, []))
+      l in
+  if tdl <> [] then
+    <:str_item< type $list:tdl$ >>
+  else
+    <:str_item< declare end >>
+
+
+let make_typeval _loc l =
+  let bool _loc b =
+    if b then <:expr< True >>
+    else <:expr< False >> in 
+  let run = <:expr< $uid:"Run_json_static"$ >> in
+
+  let additional_defs = ref [] in
+
+  let rec convert (_loc, def) =
+    match def with
+	List x -> <:expr< $run$.List $convert x$ >>
+      | Array x -> <:expr< $run$.Array $convert x$ >>
+      | Option x -> <:expr< $run$.Option $convert x$ >>
+      | Object l -> <:expr< $run$.Object $make_fields _loc l$ >>
+      | Record l -> <:expr< $run$.Record $make_fields _loc l$ >>
+      | Hashtbl x -> <:expr< $run$.Hashtbl $convert x$ >>
+      | Assoc x -> <:expr< $run$.Assoc $convert x$ >>
+      | Tuple l -> 
+	  let tl = 
+	    List.fold_right (fun x l -> 
+			       <:expr< [ $convert x$ :: $l$ ] >>)
+	      l <:expr< [] >> in
+	  <:expr< $run$.Tuple $tl$ >>
+      | Poly l -> <:expr< $run$.Poly $make_constructors _loc l$ >>
+      | Variant l -> <:expr< $run$.Variant $make_constructors _loc l$ >>
+      | Name x -> <:expr< $run$.Name $str:x$ >>
+      | String -> <:expr< $run$.String >>
+      | Bool -> <:expr< $run$.Bool >>
+      | Int -> <:expr< $run$.Int >>
+      | Float -> <:expr< $run$.Float >>
+      | Number -> <:expr< $run$.Number >>
+      | Raw -> <:expr< $run$.Raw >>
+      | Custom s -> <:expr< $uid:s$ . typedef >>
+
+
+  and make_field _loc (x : field) =
+    let to_json = new_id "to_json" in
+    let json_default_value = new_id "json_default_value" in
+    let get_json_subset = new_id "get_json_subset" in
+    let validate_abstract_subset mem =
+      <:expr< 
+	fun x ->
+	  if not $mem$ then
+	    __json_static_error ($lid:to_json$ x)
+	      "invalid field value: not in valid subset"
+	  else ()
+      >>
+    in
+    let validate_list_subset list =
+      validate_abstract_subset <:expr< List.mem x $list$ >>
+    in
+    let validate_dynlist_subset get_list =
+      validate_list_subset <:expr< $get_list$ () >>
+    in
+
+    let has_default = x.default <> None in
+    let has_subset = x.subset <> None in
+
+    let tojson_def =
+      if not has_default && not has_subset then <:str_item< declare end >>
+      else
+	let e1 = make_tojson_val x.field_type in
+	<:str_item< value $lid:to_json$ = $e1$ >>
+    in
+
+    let validator =
+      match x.subset with
+	  None -> <:str_item< value $lid:get_json_subset$ = None >>
+	| Some set ->
+	    let lid s = <:expr< $lid:s$ >> in
+	    let lidx s = <:expr< $lid:s$ x >> in
+	    let e1 =
+	      match set with
+		  `List e -> 
+		    <:expr< 
+		      let list = $e$ in
+		      let json_list = List.map $lid:to_json$ list in
+		      ( Some (`List json_list),
+			$validate_list_subset (lid "list")$ )
+		    >>
+		| `Dynlist get_list ->
+		    <:expr< 
+		      let get_list = $get_list$ in
+		      let get_json_list () =
+			List.map $lid:to_json$ (get_list ()) in
+		      ( Some (`Dynlist get_json_list),
+			$validate_dynlist_subset (lid "get_list")$ )
+		    >>
+		| `Abstract_set mem ->
+		    <:expr<
+		      let mem = $mem$ in
+		      ( Some `Abstract_set,
+			$validate_abstract_subset (lidx "mem")$ )
+		    >>
+	    in
+	    let validator_name =
+	      match x.validator_name with
+		  Some s -> s
+		| None -> assert false in
+	    <:str_item< 
+	      value ( $lid:get_json_subset$, $lid:validator_name$ ) = $e1$
+	    >>
+    in
+
+    additional_defs := tojson_def :: !additional_defs;
+    additional_defs := validator :: !additional_defs;
+
+    let insert_default e2 =
+      (* default value must be in subset *)
+      match x.default with
+	  None -> <:expr< let $lid:json_default_value$ = None in $e2$ >>
+	| Some e -> 
+	    let _loc = MLast.loc_of_expr e in
+	    let e1 =
+	      if has_subset then
+		let validator_name =
+		  match x.validator_name with
+		      Some s -> s
+		    | None -> assert false in
+		<:expr< 
+		  Some ( 
+		    let default_value = $e$ in
+		    do { $lid:validator_name$ default_value;
+			 $lid:to_json$ default_value }
+                  )
+		>>
+	      else
+		<:expr< Some ( $lid:to_json$ $e$ ) >>
+	    in
+	    <:expr< let $lid:json_default_value$ = $e1$ in $e2$ >>
+    in
+    (insert_default
+     <:expr<
+     { Run_json_static.field_caml_name = $str:x.field_caml_name$;
+       field_json_name = $str:x.field_json_name$;
+       field_type = $convert x.field_type$;
+       optional = $bool _loc x.optional$;
+       json_default = $lid:json_default_value$;
+       json_subset = $lid:get_json_subset$;
+       is_mutable = $bool _loc x.is_mutable$ }
+     >>)
+
+  and make_fields _loc (l : field list) =
+    List.fold_right
+      (fun field l -> 
+	 let e = make_field _loc field in
+	 <:expr< [ $e$ :: $l$ ] >>)
+      l <:expr< [] >>
+      
+  and make_constructors _loc l =
+    List.fold_right
+      (fun x l ->
+	 let args =
+	   List.fold_right 
+	     (fun x l -> <:expr< [ $convert x$ :: $l$ ] >>)
+	     x.cons_args <:expr< [] >> in
+	 <:expr< [ { Run_json_static.cons_caml_name = $str:x.cons_caml_name$;
+		     cons_json_name = $str:x.cons_json_name$;
+		     cons_args = $args$ } :: $l$ ] >>)
+      l <:expr< [] >>
+  in
+
+  let defs = 
+    optmap
+      (fun ((_loc, name), x) -> 
+	 let xname = name ^ "_typedef" in
+	 Some (<:patt< ( $lid:xname$ : Run_json_static.typedef ) >>, 
+	       <:expr< { Run_json_static.typename = $str:name$;
+			 def = $convert x.def$;
+			 is_predefined = $bool _loc x.is_predefined$;
+			 is_private = $bool _loc x.is_private$ } >>)) l in
+  if defs <> [] then
+    let x =
+      List.rev_append !additional_defs
+	[ <:str_item< value $list:defs$ >> ] in
+    <:str_item< 
+      declare
+        $list:x$
+      end
+    >>
+  else
+    <:str_item< declare end >>
+
+
+
+
+let expand_typedefs _loc l =
+  check_unique (fun (name, x) -> name) l;
+  let names = 
+    List.fold_left 
+      (fun m (((_loc, name), x) as data) -> StringMap.add name data m)
+      StringMap.empty l in
+  let typedef = make_typedef _loc names l in
+  let typeval =
+    if !light_mode then <:str_item< declare end >>
+    else make_typeval _loc l in
+  let ofjson = make_ofjson_defs _loc l in
+  let tojson = make_tojson_defs _loc l in
+  <:str_item< 
+    declare 
+      $error _loc$; 
+      $typedef$;
+      $typeval$;
+      $ofjson$;
+      $tojson$; 
+    end
+  >>
+
+
+let o2b = function None -> false | _ -> true
+
+let is_reserved =
+  let l = [ "json"; "json_type";
+	    "string"; "bool"; "int"; "float"; 
+	    "number"; "assoc" ] in
+  let tbl = Hashtbl.create 20 in
+  List.iter (fun s -> Hashtbl.add tbl s ()) l;
+  Hashtbl.mem tbl
+
+
+let find_and_remove k0 l0 =
+  try 
+    let _loc, _, v = List.find (fun (_, k, _) -> k = k0) l0 in
+    let removed, l = List.partition (fun (_, k, _) -> k = k0) l0 in
+    if List.length removed <> 1 then
+      Stdpp.raise_with_loc _loc
+	(Failure ("this option is specified multiple times: " ^ k0))
+    else
+      Some v, l
+  with Not_found -> None, l0
+
+let read_options _loc default options =
+  let options = match options with None -> [] | Some l -> l in
+  let options =
+    match default with
+	None -> options
+      | Some e -> (MLast.loc_of_expr e, "default", e) :: options in
+  let default, options = find_and_remove "default" options in
+  let list, options = find_and_remove "list_subset" options in
+  let dynlist, options = find_and_remove "dynlist_subset" options in
+  let abstract, options = find_and_remove "abstract_subset" options in
+  if options <> [] then
+    Stdpp.raise_with_loc _loc
+      (Failure (sprintf "unknown options: %s"
+	 (String.concat ", " (List.map (fun (_, k, _) -> k) options))))
+  else
+    let subset = ref None in
+    let set r f o = 
+      match !r, o with
+	  None, Some x -> r := Some (f x)
+	| Some _, Some _ ->
+	    Stdpp.raise_with_loc _loc
+	      (Failure "incompatible subset options")
+	| _ -> ()
+    in
+    set subset (fun e -> `List e) list;
+    set subset (fun e -> `Dynlist e) dynlist;
+    set subset (fun e -> `Abstract_set e) abstract;
+    default, !subset
+
+
+open Pcaml
+
+let list_of_opt = function None -> [] | Some x -> [x]
+let list_of_optlist = function None -> [] | Some x -> x
+
+let check_methods l =
+  List.iter (fun x ->
+	       if x.is_mutable then
+		 Stdpp.raise_with_loc x.field_caml_loc 
+		   (Failure "object fields cannot be made mutable")) l
+
+let string_assoc _loc = function
+    (_loc, Tuple [ (_, String); (_, x) ]) -> (_loc, x)
+  | (_, _) -> 
+      Stdpp.raise_with_loc _loc
+	(Failure "must be of the form (string * ...) assoc")
+
+EXTEND
+  GLOBAL: str_item;
+  str_item: LEVEL "top" [
+    [ "type"; LIDENT "json"; 
+      l = LIST1 type_binding SEP "and" -> expand_typedefs _loc l ]
+  ];
+
+  type_binding: [
+    [ name = [ s = LIDENT -> 
+		 if is_reserved s then
+		   Stdpp.raise_with_loc _loc 
+		     (Failure ("you can't use '" ^ s ^ "' as a type name"))
+		 else (_loc, s) ]; 
+      "=";
+      p = OPT [ LIDENT "predefined" (* ; 
+		priv = OPT "private"*) -> (* priv <> None *) false ];
+      t = [ t = type_expr -> (t : t)
+	  | r = record -> (_loc, Record r)
+	  | v = variants -> (_loc, Variant v) ] ->
+	let typedef =
+	  match p with
+	      None -> { is_predefined = false;
+			is_private = false;
+			def = t }
+	    | Some is_private -> 
+		{ is_predefined = true;
+		  is_private = is_private;
+		  def = t } in
+	(name, typedef) ]
+  ];
+
+  record: [
+    [ "{"; l = methods; "}" -> l ]
+  ];
+
+  variants: [
+    [ l = 
+	LIST1 [ id = [ id = UIDENT -> (_loc, id) ]; 
+		label = OPT [ s = STRING -> 
+				(_loc, Token.eval_string _loc s) ];
+		typ = OPT [ "of";
+			    x = LIST1 type_expr LEVEL "simple" 
+				SEP "*" -> x ] -> 
+		  let id' = unopt id label in
+		  { cons_caml_loc = fst id;
+		    cons_caml_name = snd id;
+		    cons_json_loc = fst id';
+		    cons_json_name = snd id';
+		    cons_args = list_of_optlist typ } ] 
+	  SEP "|" -> 
+	    check_unique (fun x -> (x.cons_caml_loc, x.cons_caml_name)) l;
+            check_unique (fun x -> (x.cons_json_loc, x.cons_json_name)) l;
+	    l ]
+  ];
+
+  type_expr: [
+    "top" [
+      x = type_expr; "*"; l = LIST1 type_expr LEVEL "simple" SEP "*" ->
+	(_loc, Tuple (x :: l)) 
+    ]
+		
+  | "simple" [
+      x = type_expr; LIDENT "list" -> (_loc, List x)
+    | x = type_expr; LIDENT "array" -> (_loc, Array x)
+    | x = type_expr; LIDENT "option" -> (_loc, Option x)
+    | x = type_expr; LIDENT "assoc" -> (_loc, Assoc (string_assoc _loc x))
+    | "<"; l = methods; ">" -> check_methods l; (_loc, Object l)
+    | "["; l = polymorphic_variants; "]" -> (_loc, Poly l)
+    | "("; x = type_expr; ")" -> x
+    | "("; LIDENT "string"; ","; x = type_expr; ")"; 
+      UIDENT "Hashtbl"; "."; LIDENT "t" -> 
+	(_loc, Hashtbl x)
+    | name = LIDENT -> (_loc, Name name)
+    | LIDENT "string" -> (_loc, String)
+    | LIDENT "bool" -> (_loc, Bool)
+    | LIDENT "int" -> (_loc, Int)
+    | LIDENT "float" -> (_loc, Float)
+    | LIDENT "number" -> (_loc, Number)
+    | [ UIDENT "Json_type"; "."; LIDENT "json_type"
+      | LIDENT "json_type" ] -> (_loc, Raw)
+    | module_name = UIDENT; "."; LIDENT "t" -> 
+	if module_name = "Json_type" then (_loc, Raw)
+	else (_loc, Custom module_name) ]
+  ];
+
+  polymorphic_variants: [
+    [ l = 
+	LIST1 [ "`"; id = [ id = [ LIDENT | UIDENT ] -> (_loc, id) ]; 
+		label = OPT [ s = STRING -> 
+				(_loc, Token.eval_string _loc s) ];
+		typ = OPT [ "of"; x = type_expr -> x ] -> 
+		  let id' = unopt id label in
+		  { cons_caml_loc = fst id;
+		    cons_caml_name = snd id;
+		    cons_json_loc = fst id';
+		    cons_json_name = snd id';
+		    cons_args = list_of_opt typ } ] 
+	  SEP "|" -> 
+	    check_unique (fun x -> (x.cons_caml_loc, x.cons_caml_name)) l;
+            check_unique (fun x -> (x.cons_json_loc, x.cons_json_name)) l;
+	    l ]
+  ];
+
+  methods: [
+    [ l = LIST0 
+	    [ mut = OPT "mutable";
+	      lab = method_label; x = type_expr; 
+	      options = OPT [ "{"; l = LIST0 option SEP ";"; "}" -> l ];
+	      default = OPT [ "="; e = expr LEVEL "apply" -> e ]-> 
+		let ((id, optional), label) = lab in
+		let id' = unopt id label in
+		let default, subset = read_options _loc default options in
+		let validator_name =
+		  if subset = None then None
+		  else Some (new_id "validate") in
+		{ field_caml_loc = fst id;
+		  field_caml_name = snd id;
+		  field_json_loc = fst id';
+		  field_json_name = snd id';
+		  field_type = x;
+		  optional = optional;
+		  default = default;
+		  subset = subset;
+		  validator_name = validator_name;
+		  is_mutable = (mut <> None) } ]
+	    SEP ";" ->
+	check_unique (fun x -> (x.field_caml_loc, x.field_caml_name)) l;
+        check_unique (fun x -> (x.field_json_loc, x.field_json_name)) l;
+	l ]
+  ];
+
+  option: [
+    [ k = LIDENT; "="; v = expr LEVEL "expr1" -> (_loc, k, v) ]
+  ];
+
+  method_label: [
+    [ id_opt = [ id = LIDENT -> ((_loc, id), false)
+	       | id = QUESTIONIDENT -> ((_loc, id), true) ]; 
+      label = OPT [ s = STRING -> 
+		      (_loc, Token.eval_string _loc s) ];
+      ":" -> (id_opt, label)
+    | id = OPTLABEL -> (((_loc, id), true), None) ]
+  ];
+
+END
+;;
+
+let _ =
+  Pcaml.add_option "-js-light" 
+    (Arg.Set light_mode)
+    " no typedefs would be generated"

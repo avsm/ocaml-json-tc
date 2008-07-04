@@ -1,0 +1,7 @@
+name = "json-static"
+description = "statically-typed JSON data"
+requires = "camlp4 json-wheel"
+archive(syntax,toploop) = "pa_json_static.cmo"
+archive(syntax,preprocessor) = "pa_json_static.cmo"
+archive(byte) = "run_json_static.cmo"
+archive(native) = "run_json_static.cmx"
