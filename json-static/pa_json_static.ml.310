@@ -219,14 +219,21 @@ let make_typedef _loc names l =
       | Raw -> <:ctyp< Json_type.t >>
       | Custom s -> <:ctyp< $uid:s$ . t >> in
 
-  let tdl = 
-    List.fold_right begin fun ((_loc, name), x) acc ->
-      if x.is_predefined then acc
-      else
-        let dcl = Ast.TyDcl (_loc, name, [], convert x.def, []) in
-        <:ctyp< $dcl$ and $acc$ >>
-    end l <:ctyp<>> in
-  <:str_item< type $tdl$ >>
+  match l with
+      [] -> <:str_item< >>
+    | ((_loc, name), x) :: l ->
+
+	let tdl =
+	  let dcl = Ast.TyDcl (_loc, name, [], convert x.def, []) in
+	  List.fold_right (
+	    fun ((_loc, name), x) acc ->
+	      if x.is_predefined then acc
+	      else
+		let dcl = Ast.TyDcl (_loc, name, [], convert x.def, []) in
+		<:ctyp< $dcl$ and $acc$ >>
+          ) l dcl in
+	<:str_item< type $tdl$ >>
+
 
 let numbered_list l =
   Array.to_list
