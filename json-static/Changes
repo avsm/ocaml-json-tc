@@ -1,3 +1,8 @@
+2009-08-13: 0.9.7
+     * Fix allowing toplevel use
+
+2008-02-04: 0.9.6
+
 2007-04-02: 0.9.5
      Added support for "the new camlp4" (3.10.0+beta)
 
