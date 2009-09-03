@@ -1,6 +1,6 @@
 include Camlp4Version
 
-VERSION = 0.9.7
+VERSION = 0.9.8
 export VERSION
 
 
@@ -39,7 +39,7 @@ check:
 		> check.mli.auto
 	ocamlfind ocamlopt -o check -package json-wheel -linkpkg \
 		-pp 'camlp4o -I . $(PARSER) pa_json_static.cmo' \
-		run_json_static.cmx check.ml
+		check.ml
 	./check
 install: META
 	ocamlfind install json-static META \
