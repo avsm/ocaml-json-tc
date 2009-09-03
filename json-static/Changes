@@ -1,3 +1,7 @@
+2009-09-03: 0.9.8
+     * Fixed bug leading "predefined" to be ignored if first in a group of 
+       type definitions.
+
 2009-08-13: 0.9.7
      * Fix allowing toplevel use
 
