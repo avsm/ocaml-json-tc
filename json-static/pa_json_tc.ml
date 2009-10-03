@@ -116,6 +116,10 @@ and type_expr =
   | String
   | Bool
   | Int
+  | Int32
+  | Int64
+  | Char
+  | Unit
   | Float
   | Number
   | Raw
@@ -187,6 +191,18 @@ let make_ofjson _loc l =
       | Number -> browse _loc "number"
       | Raw -> <:expr< fun x -> x >>
       | Custom modul -> <:expr< $uid:modul$ . of_json >>
+      | Unit -> <:expr< let browse_unit _ = () in browse_unit >>
+      | Char -> <:expr< 
+         let browse_char x = match $browse _loc "string"$ x with [
+           "" -> raise (Json_type.Json_error "empty character")
+         | x  -> x.[0] ] 
+         in browse_char >>
+      | Int32 -> <:expr<
+         let browse_int32 x = Int32.of_float ($browse _loc "number"$ x) in
+         browse_int32 >>
+      | Int64 -> <:expr<
+         let browse_int64 x = Int64.of_float ($browse _loc "number"$ x) in
+         browse_int64 >>
 
    and convert_object _loc l =
      let pel = convert_object_field_list _loc l in
@@ -394,6 +410,10 @@ let make_tojson _loc l =
       | String -> build _loc "string"
       | Bool -> build _loc "bool"
       | Int -> build _loc "int"
+      | Int32 -> <:expr< let build_int32 x = Json_type.Build.float (Int32.to_float x) in build_int32 >>
+      | Int64 -> <:expr< let build_int64 x = Json_type.Build.float (Int64.to_float x) in build_int64 >>
+      | Unit -> <:expr< let build_unit () = Json_type.Build.int 0 in build_unit >>
+      | Char -> <:expr< let build_char x = Json_type.Build.string (String.make 1 x) in build_char >>
       | Float -> build _loc "float"
       | Number -> build _loc "float"
       | Raw -> <:expr< fun x -> x >>
@@ -452,37 +472,6 @@ let string_assoc _loc = function
       Loc.raise _loc
 	(Failure "must be of the form (string * ...) assoc")
 
-(*
-and type_expr =
-    List of t
-  | Array of t
-  | Option of t
-  | Object of field list
-  | Record of field list
-  | Hashtbl of t
-  | Assoc of t
-  | Tuple of t list
-  | Variant of constructor list
-  | Poly of constructor list
-  | Name of string
-  | String
-  | Bool
-  | Int
-  | Float
-  | Number
-  | Raw
-  | Custom of string
-*)
-(*
-type field = { field_caml_name : string;
-               field_json_name : string;
-               field_type : t;
-               field_caml_loc : Loc.t;
-               field_json_loc : Loc.t;
-               optional : bool;
-               default : Ast.expr option;
-               is_mutable : bool }
-*)
 let rec process_tds tds =
   let rec fn ty =
     match ty with
@@ -506,31 +495,52 @@ and process_fields _loc cs =
         optional = false; default=None; is_mutable = mut } ]
   in fn cs
 
+and process_constructor _loc rf =
+  List.map (function
+    | <:ctyp< `$uid:id$ of $t$ >> 
+    | <:ctyp< $uid:id$ of $t$ >> ->
+       let cons_args = List.map (fun x -> _loc, process_td _loc x) (Ast.list_of_ctyp t []) in
+       { cons_caml_name=id; cons_json_name=id; cons_caml_loc=_loc;
+         cons_json_loc=_loc; cons_args=cons_args }
+    | <:ctyp< `$uid:id$ >> 
+    | <:ctyp< $uid:id$ >> ->
+       { cons_caml_name=id; cons_json_name=id; cons_caml_loc=_loc;
+         cons_json_loc=_loc; cons_args=[] }
+    | _ -> failwith "process_constructor: unexpected AST"
+  ) (Ast.list_of_ctyp rf [])
+ 
 and process_td _loc = function
  | <:ctyp< string >> -> String
  | <:ctyp< int >> -> Int
  | <:ctyp< float >> -> Float
  | <:ctyp< bool >> -> Bool
- | <:ctyp< int32 >> -> failwith "todo int"
- | <:ctyp< int64 >> -> failwith "todo int64"
- | <:ctyp< unit >> -> failwith "todo unit"
- | <:ctyp< char >> -> failwith "todo char"
- | <:ctyp< < $cs$ > >> -> Object (process_fields _loc cs)
- | <:ctyp< { $cs$ } >> -> Record (process_fields _loc cs)
+ | <:ctyp< int32 >> -> Int32
+ | <:ctyp< int64 >> -> Int64
+ | <:ctyp< unit >> -> Unit
+ | <:ctyp< char >> -> Char
+
  | <:ctyp< option $t$ >> -> Option (_loc, process_td _loc t)
  | <:ctyp< list $t$ >> -> List (_loc, process_td _loc t)
  | <:ctyp< array $t$ >> -> Array (_loc, process_td _loc t)
+
+ | <:ctyp< < $cs$ > >> -> Object (process_fields _loc cs)
+ | <:ctyp< { $cs$ } >> -> Record (process_fields _loc cs)
+
+ | <:ctyp< [< $rf$ ] >> 
+ | <:ctyp< [> $rf$ ] >>
+ | <:ctyp< [= $rf$ ] >> -> Poly (process_constructor _loc rf)
+ | <:ctyp< [ $rf$ ] >> -> Variant (process_constructor _loc rf)
  | <:ctyp< ( $tup:tp$ ) >> -> 
    let tps = List.map 
      (fun t -> _loc, process_td _loc t) 
        (Ast.list_of_ctyp tp []) in
    Tuple tps
 
+ | <:ctyp< $uid:id$.t >> -> Custom id (* XXX broken, how to check for TyApp? *)
+ | <:ctyp< $lid:id$ >> -> Name id
+ | _ -> failwith "unknown type"
+
 open Pa_type_conv
 let _ =
   add_generator "json"
-   (fun tds ->
-     let _loc = Loc.ghost in
-     let tys = process_tds tds in
-     <:str_item< $expand_typedefs _loc tys$ >>
-   )
+   (fun tds -> <:str_item< $expand_typedefs Loc.ghost (process_tds tds)$ >>)

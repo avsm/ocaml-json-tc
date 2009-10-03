@@ -7,8 +7,14 @@ export VERSION
 .PHONY: default all opt init common check test install uninstall
 .PHONY: clean meta doc archive demo
 
-default: all opt
+default: jtc all init
 all: init common
+
+jtc:
+	ocamlfind ocamlc -package type-conv -c -pp "$(CAMLP4ORF)" -annot -g -I +camlp4 pa_json_tc.ml
+
+jtc-%:
+	ocamlfind ocamlc -package json-wheel -linkpkg -pp "$(CAMLP4ORF) -I `ocamlfind query type-conv` pa_type_conv.cmo pa_json_tc.cmo" $*.ml
 
 init:
 	echo $$CAMLP4_VERSION
