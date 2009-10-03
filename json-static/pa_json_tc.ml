@@ -6,6 +6,7 @@
 
 Copyright (c) 2007 Burnham Institute for Medical Research
 Copyright (c) 2008 Martin Jambon
+Copyright (c) 2009 Anil Madhavapeddy <anil@recoil.org>
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -446,31 +447,6 @@ let expand_typedefs _loc l =
   let ofjson = make_ofjson _loc l in
   let tojson = make_tojson _loc l in
   <:str_item< $ofjson$; $tojson$ >>
-
-let o2b = function None -> false | _ -> true
-
-let is_reserved =
-  let l = [ "json"; "json_type";
-	    "string"; "bool"; "int"; "float"; 
-	    "number"; "assoc" ] in
-  let tbl = Hashtbl.create 20 in
-  List.iter (fun s -> Hashtbl.add tbl s ()) l;
-  Hashtbl.mem tbl
-
-let list_of_opt = function None -> [] | Some x -> [x]
-let list_of_optlist = function None -> [] | Some x -> x
-
-let check_methods l =
-  List.iter (fun x ->
-	       if x.is_mutable then
-		 Loc.raise x.field_caml_loc 
-		   (Failure "object fields cannot be made mutable")) l
-
-let string_assoc _loc = function
-    (_loc, Tuple [ (_, String); (_, x) ]) -> (_loc, x)
-  | (_, _) -> 
-      Loc.raise _loc
-	(Failure "must be of the form (string * ...) assoc")
 
 let rec process_tds tds =
   let rec fn ty =
