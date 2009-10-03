@@ -448,6 +448,9 @@ let expand_typedefs _loc l =
   let tojson = make_tojson _loc l in
   <:str_item< $ofjson$; $tojson$ >>
 
+let type_fail ctyp msg =
+  Loc.raise (Ast.loc_of_ctyp ctyp) (Failure msg)
+
 let rec process_tds tds =
   let rec fn ty =
     match ty with
@@ -455,7 +458,7 @@ let rec process_tds tds =
        fn tyl @ (fn tyr)
     |Ast.TyDcl (_loc, id, _, ty, []) ->
        [ (_loc, id ) , (_loc, process_td _loc ty) ]
-    |_ -> failwith "process_tds: unexpected type"
+    | other -> type_fail other "process_tds: unexpected AST"
    in fn tds
 
 and process_fields _loc cs =
@@ -463,7 +466,7 @@ and process_fields _loc cs =
     | <:ctyp< $t1$; $t2$ >> -> fn t1 @ (fn t2)
     | <:ctyp< $lid:id$ : mutable $t$ >> -> fnt ~mut:true ~id ~t
     | <:ctyp< $lid:id$ : $t$ >> ->  fnt ~mut:false ~id ~t
-    | _ -> failwith "unexpected ast"
+    | other -> type_fail other "process_fields: unexpected AST"
   and fnt ~mut ~id ~t =
     [ { field_caml_name = id; field_json_name = id;
         field_type = (_loc, process_td _loc t);
@@ -482,7 +485,7 @@ and process_constructor _loc rf =
     | <:ctyp< $uid:id$ >> ->
        { cons_caml_name=id; cons_json_name=id; cons_caml_loc=_loc;
          cons_json_loc=_loc; cons_args=[] }
-    | _ -> failwith "process_constructor: unexpected AST"
+    | other -> type_fail other "process_constructor: unexpected AST"
   ) (Ast.list_of_ctyp rf [])
  
 and process_td _loc = function
@@ -514,7 +517,7 @@ and process_td _loc = function
 
  | <:ctyp< $uid:id$.t >> -> Custom id (* XXX broken, how to check for TyApp? *)
  | <:ctyp< $lid:id$ >> -> Name id
- | _ -> failwith "unknown type"
+ | other -> type_fail other "unknown_type"
 
 open Pa_type_conv
 let _ =
