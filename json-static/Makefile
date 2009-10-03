@@ -49,7 +49,7 @@ check:
 	./check
 install: META
 	ocamlfind install json-static META \
-		pa_json_static.cmi pa_json_static.cmo
+		pa_json_static.cmi pa_json_static.cmo pa_json_tc.cmi pa_json_tc.cmo
 META: META.template Makefile
 	echo 'version = "$(VERSION)"' > META
 	cat META.template >> META
