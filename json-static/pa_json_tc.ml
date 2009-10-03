@@ -498,6 +498,9 @@ and process_td _loc = function
  | <:ctyp< unit >> -> Unit
  | <:ctyp< char >> -> Char
 
+ | <:ctyp< Hashtbl.t string $t$ >> -> Hashtbl (_loc, process_td _loc t)
+ | <:ctyp< list ( string * $t$ ) >> -> Assoc (_loc, process_td _loc t)
+
  | <:ctyp< option $t$ >> -> Option (_loc, process_td _loc t)
  | <:ctyp< list $t$ >> -> List (_loc, process_td _loc t)
  | <:ctyp< array $t$ >> -> Array (_loc, process_td _loc t)
@@ -515,7 +518,7 @@ and process_td _loc = function
        (Ast.list_of_ctyp tp []) in
    Tuple tps
 
- | <:ctyp< $uid:id$.t >> -> Custom id (* XXX broken, how to check for TyApp? *)
+ | <:ctyp< $uid:id$.t >> -> Custom id
  | <:ctyp< $lid:id$ >> -> Name id
  | other -> type_fail other "unknown_type"
 
