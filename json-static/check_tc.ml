@@ -16,7 +16,11 @@ and t = {
 type o = <
   foo: string;
   bar: int
-> with json
+> and
+odd = {
+  fn: int -> int;
+  fn2: unit
+} with json(skip:odd)
 
 let _ = 
   let h = Hashtbl.create 1 in 

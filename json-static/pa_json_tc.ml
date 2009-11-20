@@ -451,12 +451,13 @@ let expand_typedefs _loc l =
 let type_fail ctyp msg =
   Loc.raise (Ast.loc_of_ctyp ctyp) (Failure msg)
 
-let rec process_tds tds =
+let rec process_tds skips tds =
   let rec fn ty =
     match ty with
     |Ast.TyAnd (_loc, tyl, tyr) ->
        fn tyl @ (fn tyr)
     |Ast.TyDcl (_loc, id, _, ty, []) ->
+       if List.mem id skips then [] else
        [ (_loc, id ) , (_loc, process_td _loc ty) ]
     | other -> type_fail other "process_tds: unexpected AST"
    in fn tds
@@ -522,7 +523,31 @@ and process_td _loc = function
  | <:ctyp< $lid:id$ >> -> Name id
  | other -> type_fail other "unknown_type"
 
+let json_parms = Gram.Entry.mk "json_parms"
+EXTEND Gram
+
+GLOBAL: json_parms;
+json_svars: [[ l = LIST1 [ `LIDENT(x) -> x ] SEP "," -> l ]];
+
+json_param: [[ 
+  "skip"; ":" ; x = json_svars -> `Skip x
+]];
+
+json_parms: [
+  [ l = LIST0 [ json_param ] SEP ";" -> l ]
+];
+
+END
+
 open Pa_type_conv
 let _ =
-  add_generator "json"
-   (fun tds -> <:str_item< $expand_typedefs Loc.ghost (process_tds tds)$ >>)
+  add_generator_with_arg "json" json_parms
+   (fun tds args -> 
+     let _loc = Loc.ghost in
+     let ptd = match args with
+     | None -> process_tds [] tds
+     | Some x -> 
+         let skips = List.fold_left (fun a -> function | `Skip x -> a @ x) [] x in
+         process_tds skips tds in
+     <:str_item< $expand_typedefs _loc ptd$ >>)
+
