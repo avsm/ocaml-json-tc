@@ -1,5 +1,7 @@
 .PHONY: all test clean
 
+SUDO ?= sudo
+
 all:
 	@cd lib && $(MAKE)
 
@@ -9,3 +11,13 @@ test: all
 clean:
 	@cd lib && $(MAKE) clean
 	@cd lib_test && $(MAKE) clean
+
+install:
+	@cd lib && $(SUDO) $(MAKE) install
+
+uninstall:
+	@cd lib && $(SUDO) $(MAKE) uninstall
+
+reinstall:
+	-$(MAKE) uninstall
+	$(MAKE) install

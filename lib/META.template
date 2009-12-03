@@ -1,5 +1,9 @@
 name = "json-tc"
 description = "statically-typed JSON data using type-conv"
-requires = "camlp4 json-wheel"
-archive(syntax,toploop) = "pa_json_tc.cmo"
-archive(syntax,preprocessor) = "pa_json_tc.cmo"
+
+package "syntax" (
+  requires = "camlp4 json-wheel type-conv.syntax"
+  archive(syntax, preprocessor) = "pa_json_tc.cmo"
+  archive(syntax, toploop) = "pa_json_tc.cmo"
+)
+
