@@ -2,5 +2,6 @@
 *.cmo
 *.a
 *.o
+*.annot
 *.cmi
 META
