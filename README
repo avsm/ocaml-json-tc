@@ -226,3 +226,11 @@ Note how we specified that `Any translates into "*" rather than "Any".
 The same technique is available to rename object methods, and it is crucial
 when some existing JSON format uses method names that are not valid
 OCaml identifiers.
+
+
+Credits
+=======
+
+json-tc is based on the json-static/json-wheel libraries by Martin
+Jambon, and converted to use the type-conv library so that it can
+be used alongside other camlp4 syntax extensions.
