@@ -1,32 +1,34 @@
-                          json-static
+                          json-tc
 
 Introduction
 ============
 
-json-static is a syntax extension of OCaml that can make the use of
-JSON data easier. From a special type declaration, the camlp4 preprocessor
-generates the code that converts between a JSON "abstract syntax tree"
-and specialized OCaml data structures such as objects, polymorphic variants,
-lists, arrays, tuples, etc.
+json-tc is a syntax extension of OCaml that can make the use of
+JSON data easier. From a special type declaration, the camlp4
+preprocessor generates the code that converts between a JSON "abstract
+syntax tree" and specialized OCaml data structures such as objects,
+polymorphic variants, lists, arrays, tuples, etc.
 
-It will at the same time check that the structure of the JSON document
-is correct and produce OCaml data which is statically typed.
-For example, the following declaration defines the type of a point object:
+It will at the same time check that the structure of the JSON
+document is correct and produce OCaml data which is statically
+typed.  For example, the following declaration defines the type of
+a point object:
 
   type point = < x: float; y: float > with json
 
-This automatically makes two functions available, with the following signature:
+This automatically makes two functions available, with the following
+signature:
 
   val json_of_point : point -> Json_type.t
   val point_of_json : Json_type.t -> point
 
-Json_type.t is the type of parsed JSON data, which is provided by 
+Json_type.t is the type of parsed JSON data, which is provided by
 the json-wheel library.
 
-Function json_of_point would convert an OCaml object of type point into
-a JSON object. point_of_json works the other way around, and fails 
-by raising the Json_type.Json_error exception 
-if the input JSON data doesn't have the right format.
+Function json_of_point would convert an OCaml object of type point
+into a JSON object. point_of_json works the other way around, and
+fails by raising the Json_type.Json_error exception if the input
+JSON data doesn't have the right format.
 
 
 Installation
