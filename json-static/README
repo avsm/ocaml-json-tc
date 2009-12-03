@@ -13,7 +13,7 @@ It will at the same time check that the structure of the JSON document
 is correct and produce OCaml data which is statically typed.
 For example, the following declaration defines the type of a point object:
 
-  type json point = < x: float; y: float >
+  type point = < x: float; y: float > with json
 
 This automatically makes two functions available, with the following signature:
 
@@ -45,14 +45,14 @@ Usage
 =====
 
 Basically, you must preprocess your OCaml file(s) with 
-camlp4o pa_json_static.cmo. Once installed using the standard
+camlp4o pa_json_tc.cmo. Once installed using the standard
 procedure (ocamlfind), you can compile a file using these commands:
 
 # compile
-ocamlfind ocamlopt -c yourfile.ml -syntax camlp4o -package json-static
+ocamlfind ocamlopt -c yourfile.ml -syntax camlp4o -package json-tc
 
 # link
-ocamlfind ocamlopt -o yourprog yourfile.cmx -linkpkg -package json-wheel
+ocamlfind ocamlopt -o yourprog yourfile.cmx -linkpkg -package json-tc
 
 Build tools like OCamlMakefile take care of this nicely.
 
@@ -113,73 +113,24 @@ X.t***                  defined by X.of_json and X.to_json
      are mandatory.
 
 A type definition is done like regular type definitions, but the keyword
-"json" is placed just after "type", as in:
+"with json" is placed after the type definition, as:
 
-  type json t = int * float
-       ^^^^
+  type t = int * float with json
+                       ^^^^^^^^^
 
 The type cannot be polymorphic, i.e. it doesn't support type parameters.
 A small set of basic types are supported (see table above). Other type
 names can be used only if they are part of the same definition.
 This works:
 
-  type json a = b
-  and b = int list
+  type a = b
+  and b = int list with json
 
 But the following doesn't work:
 
-  type json b = int list
+  type b = int list with json
 
-  type json a = b  (* b is unknown to the preprocessor *)
-
-
-In addition to the basic syntax for type declarations, a few extensions
-have been added:
-
-1) Object labels or variant names can be followed by an arbitrary string.
-   When it is the case, this defines the string to be found in the JSON
-   data.
-
-2) Object methods can be preceded by a questionmark. If it is the case,
-   JSON objects that do not have this field could still be read. 
-   Their value is set to null instead of being undefined and causing an error.
-
-3) A default value can be specified a after a method definition.
-   The syntax is a "=" followed by an expression. The expression should
-   be a constant. The default expression is used whenever 
-   the JSON null value is encountered, even if the type converter
-   knows how to deal with null.
-
-4) Records and variant types must be named, as always in OCaml. Reusing
-   an existing definition is possible by using the "predefined" keyword
-   as in 
-     type point = predefined { x : float; y : float }
-   or
-     type t = predefined A | B of bool * t
-
-   Predefined read-only records or variant types (private)
-   cannot be used as of version 0.9.3 of this program.
-
-
-A common use of optional methods without a default argument is when omitting
-an object field is allowed and considered equivalent to a null value.
-
-Optional methods of a type that doesn't accept the null value don't make
-much sense but are not rejected. The following is most likely an error:
-
-  type json point = < ?x : int >
-
-(if field "x" is not found in the JSON object, then the error would be
-that null is not a valid int, instead of saying that field "x" is missing)
-
-It should be either
-
-  type json point = < ?x : int option >
-
-or
-
-  type json point = < ?x : int = 0 >
-
+  type a = b with json (* b is unknown to the preprocessor *)
 
 
 Example 1
@@ -187,10 +138,10 @@ Example 1
 
 The following definition is correct:
 
-type json point = < x: number; y: number >
-and coords = point array
+type point = < x: number; y: number >
+and coords = point array with json
 
-It can load successfully the following JSON data:
+It can successfully load the following JSON data:
 
 [ { "x": 1, "y": 0.5 },
   { "x": 0, "y": 0.3333333 } ]
@@ -200,8 +151,8 @@ Full example:
 
 (* File example1.ml *)
 
-type json point = < x: number; y: number >
-and coords = point array
+type point = < x: number; y: number >
+and coords = point array with json
 
 let json_string = "
   [ { \"x\": 1, \"y\": 0.5 },
@@ -216,7 +167,7 @@ let _ = Array.iter (fun p -> Printf.printf "(%g, %g)\n" p#x p#y) my_coords
 
 Save the example as "example1.ml", compile it and run it:
 
-$ ocamlfind ocamlopt -o example1 -linkpkg -package json-static -syntax camlp4o example1.ml
+$ ocamlfind ocamlopt -o example1 -linkpkg -package json-tc -syntax camlp4o example1.ml
 $ ./example1
 (1, 0.5)
 (0, 0.333333)
@@ -231,10 +182,10 @@ This example shows you the representation that we chose for sum types in JSON:
 
 (* File example2.ml *)
 
-type json colors = [ `Black 
+type colors = [ `Black 
                    | `White 
                    | `Rgb of (float * float * float)
-                   | `Any "*" ] list
+                   | `Any "*" ] list with json
 
 let my_colors = [ `Black; `White; `Any;
                   `Rgb (1., 0., 0.);
@@ -246,7 +197,7 @@ let _ = print_endline (Json_io.string_of_json (json_of_colors my_colors))
 (* EOF *)
 
 
-$ ocamlfind ocamlopt -o example2 -linkpkg -package json-static -syntax camlp4o example2.ml
+$ ocamlfind ocamlopt -o example2 -linkpkg -package json-tc -syntax camlp4o example2.ml
 $ ./example2
 [
   "Black",

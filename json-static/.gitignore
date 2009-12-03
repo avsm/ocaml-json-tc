@@ -1,0 +1,6 @@
+*.cma
+*.cmo
+*.a
+*.o
+*.cmi
+META

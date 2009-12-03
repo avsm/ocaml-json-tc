@@ -1,32 +1,3 @@
-2009-09-03: 0.9.8
-     * Fixed bug leading "predefined" to be ignored if first in a group of 
-       type definitions.
 
-2009-08-13: 0.9.7
-     * Fix allowing toplevel use
-
-2008-02-04: 0.9.6
-
-2007-04-02: 0.9.5
-     Added support for "the new camlp4" (3.10.0+beta)
-
-2007-03-04: 0.9.4
-     * Fixed bug that occured with definitions like (string * int * int) list
-       saying that an assoc type was expected.
-
-2007-02-22: 0.9.3
-     * Added support for records and classic variants, possibly predefined.
-     * Fixed bug "This kind of expression is not allowed as right-hand 
-       side of `let rec'" which occurred in cases like
-         type json a = b list
-         and b = int
-     * Slightly improved conversion to polymorphic variants
-
-2007-01-25: 0.9.2
-       Added support for association lists built from objects ("assoc")
-
-2007-01-24: 0.9.1
-       Added support for optional object fields and default values
-
-2007-01-19: 0.9.0
-       "Preview release"
+2009-12-3: 0.9.0
+       Initial release of json-static-0.9.8 ported over to use type-conv
