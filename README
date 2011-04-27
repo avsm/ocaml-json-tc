@@ -51,10 +51,10 @@ camlp4o pa_json_tc.cmo. Once installed using the standard
 procedure (ocamlfind), you can compile a file using these commands:
 
 # compile
-ocamlfind ocamlopt -c yourfile.ml -syntax camlp4o -package json-tc
+ocamlfind ocamlopt -c yourfile.ml -syntax camlp4o -package json-tc.syntax
 
 # link
-ocamlfind ocamlopt -o yourprog yourfile.cmx -linkpkg -package json-tc
+ocamlfind ocamlopt -o yourprog yourfile.cmx -linkpkg -package json-tc.syntax
 
 Build tools like OCamlMakefile take care of this nicely.
 
